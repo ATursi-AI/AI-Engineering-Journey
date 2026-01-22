@@ -1,0 +1,6 @@
+user_id,query_count,is_premium,queries_per_day,high_intent
+101,10.0,1.0,0.3333333333333333,False
+102,,0.0,,False
+103,2.0,0.0,0.06666666666666667,False
+104,100.0,1.0,3.3333333333333335,True
+105,,,,False

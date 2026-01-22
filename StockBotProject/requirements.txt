@@ -1,0 +1,11 @@
+pyTelegramBotAPI
+python-dotenv
+requests
+yfinance
+pandas
+pandas_ta
+textblob
+numpy
+scipy
+flask
+gunicorn
