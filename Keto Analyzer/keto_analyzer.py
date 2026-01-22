@@ -1,5 +1,8 @@
 import requests
 import time
+import io
+import zxingcpp
+from PIL import Image
 from fast_food_data import FAST_FOOD_HACKS
 
 # --- CREDENTIALS ---
@@ -7,7 +10,6 @@ CLIENT_ID = "b826e72b8a094b7abbbbe03569a28dcd"
 CLIENT_SECRET = "0693d8c758424dae80d7c47c824083c2"
 
 # --- CONFIGURATION ---
-# The "Blacklist" of ingredients that spike insulin or break ketosis
 HIDDEN_SUGARS = [
     "maltitol", "dextrose", "maltodextrin", "sugar", "cane sugar", 
     "corn syrup", "high fructose corn syrup", "agave", "honey", 
@@ -30,16 +32,89 @@ def get_access_token():
         print(f"Auth Error: {e}")
         return None
 
-def analyze_food_text(query):
-    # --- STEP 0: CHECK RESTAURANT HACKS ---
-    # Convert query to lowercase and strip whitespace for matching
-    clean_query = query.lower().strip()
+# --- CORE LOGIC: THE JUDGE ---
+def format_food_verdict(food_id, food_name, token):
+    headers = {'Authorization': f'Bearer {token}'}
+    api_url = "https://platform.fatsecret.com/rest/server.api"
     
-    # Check if we have a cheat sheet for this input
+    # Get Details
+    detail_params = {'method': 'food.get.v2', 'food_id': food_id, 'format': 'json'}
+    res_detail = requests.get(api_url, params=detail_params, headers=headers)
+    details_data = res_detail.json()
+    
+    if 'error' in details_data:
+         return None 
+
+    details = details_data.get('food', {})
+    servings_obj = details.get('servings', {}).get('serving', [])
+    
+    if not servings_obj:
+        return None
+    
+    # Get Primary Serving
+    serving = servings_obj[0] if isinstance(servings_obj, list) else servings_obj
+    
+    # Data Extraction
+    carbs = float(serving.get('carbohydrate', 0))
+    fiber = float(serving.get('fiber', 0))
+    fat = float(serving.get('fat', 0))
+    protein = float(serving.get('protein', 0))
+    sugar = float(serving.get('sugar', 0)) 
+    calories = serving.get('calories', '0')
+    ingredients_text = details.get('ingredients', 'N/A').lower()
+
+    net_carbs = max(0, carbs - fiber)
+    
+    # Verdict Logic
+    keto_status = ""
+    if net_carbs <= 4:
+        keto_status = "🟢 Strict Keto"
+    elif net_carbs <= 9:
+        keto_status = "🟡 Dirty Keto (Moderate)"
+    else:
+        keto_status = "🔴 Avoid for Keto"
+
+    atkins_status = ""
+    if net_carbs <= 5:
+        atkins_status = "✅ Phase 1 (Induction) Friendly"
+    elif net_carbs <= 12:
+        atkins_status = "⚠️ Phase 2 (Balancing) Only"
+    else:
+        atkins_status = "🚫 Maintenance Phase Only"
+
+    # Hidden Sugars
+    warnings = []
+    if ingredients_text != 'n/a':
+        for bad_sugar in HIDDEN_SUGARS:
+            if bad_sugar in ingredients_text:
+                warnings.append(bad_sugar.title())
+    
+    warning_block = ""
+    if warnings:
+        warning_str = ", ".join(warnings)
+        warning_block = f"\n⚠️ **HIDDEN SUGAR WARNING**\nDetected: _{warning_str}_\n"
+
+    return (f"🍽 **{food_name.upper()}**\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"🥑 **VERDICT**\n"
+            f"Keto: {keto_status}\n"
+            f"Atkins: {atkins_status}\n"
+            f"{warning_block}\n"
+            f"📊 **NUTRITION**\n"
+            f"• Net Carbs: `{net_carbs:.1f}g`\n"
+            f"• Fiber: `{fiber:.1f}g` | Sugar: `{sugar:.1f}g`\n"
+            f"• Fat: `{fat:.0f}g` | Protein: `{protein:.0f}g`\n"
+            f"• Calories: `{calories}`\n"
+            f"_(Per: {serving.get('serving_description', 'serving')})_")
+
+# --- MAIN FUNCTION 1: TEXT ANALYZER ---
+def analyze_food_text(query):
+    # 0. Check Hacks
+    clean_query = query.lower().strip()
     if clean_query in FAST_FOOD_HACKS:
         return FAST_FOOD_HACKS[clean_query]
 
-    # --- API LOGIC (Existing) ---
+    # API Loop
     for attempt in range(5):
         token = get_access_token()
         if not token:
@@ -50,7 +125,7 @@ def analyze_food_text(query):
         api_url = "https://platform.fatsecret.com/rest/server.api"
         
         try:
-            # SEARCH
+            # 1. Search
             search_params = {
                 'method': 'foods.search',
                 'search_expression': query,
@@ -61,7 +136,6 @@ def analyze_food_text(query):
             data = res.json()
             
             if 'error' in data:
-                print(f"⚠️ Search Blocked ({attempt+1}/5): {data['error']['message']}")
                 time.sleep(2)
                 continue 
 
@@ -74,84 +148,65 @@ def analyze_food_text(query):
             if not food_list:
                 return f"❓ I couldn't find any match for '{query}'."
 
-            # DETAILS LOOP
+            # 2. Loop through results until one works
             for food_item in food_list:
-                food_id = food_item['food_id']
-                food_name = food_item['food_name']
-                
-                detail_params = {'method': 'food.get.v2', 'food_id': food_id, 'format': 'json'}
-                res_detail = requests.get(api_url, params=detail_params, headers=headers)
-                details_data = res_detail.json()
-                
-                if 'error' in details_data:
-                     raise Exception(f"IP Blocked during Detail Fetch: {details_data['error']['message']}")
+                verdict = format_food_verdict(food_item['food_id'], food_item['food_name'], token)
+                if verdict:
+                    return verdict
 
-                details = details_data.get('food', {})
-                servings_obj = details.get('servings', {}).get('serving', [])
-                
-                if not servings_obj:
-                    continue 
-                
-                serving = servings_obj[0] if isinstance(servings_obj, list) else servings_obj
-                
-                # DATA EXTRACTION
-                carbs = float(serving.get('carbohydrate', 0))
-                fiber = float(serving.get('fiber', 0))
-                fat = float(serving.get('fat', 0))
-                protein = float(serving.get('protein', 0))
-                sugar = float(serving.get('sugar', 0)) 
-                calories = serving.get('calories', '0')
-                ingredients_text = details.get('ingredients', 'N/A').lower()
-
-                net_carbs = max(0, carbs - fiber)
-                
-                # VERDICTS
-                keto_status = ""
-                if net_carbs <= 4:
-                    keto_status = "🟢 Strict Keto"
-                elif net_carbs <= 9:
-                    keto_status = "🟡 Dirty Keto (Moderate)"
-                else:
-                    keto_status = "🔴 Avoid for Keto"
-
-                atkins_status = ""
-                if net_carbs <= 5:
-                    atkins_status = "✅ Phase 1 (Induction) Friendly"
-                elif net_carbs <= 12:
-                    atkins_status = "⚠️ Phase 2 (Balancing) Only"
-                else:
-                    atkins_status = "🚫 Maintenance Phase Only"
-
-                # HIDDEN SUGAR DETECTOR
-                warnings = []
-                if ingredients_text != 'n/a':
-                    for bad_sugar in HIDDEN_SUGARS:
-                        if bad_sugar in ingredients_text:
-                            warnings.append(bad_sugar.title())
-                
-                warning_block = ""
-                if warnings:
-                    warning_str = ", ".join(warnings)
-                    warning_block = f"\n⚠️ **HIDDEN SUGAR WARNING**\nDetected: _{warning_str}_\n"
-
-                return (f"🍽 **{food_name.upper()}**\n"
-                        f"━━━━━━━━━━━━━━━━━━\n"
-                        f"🥑 **VERDICT**\n"
-                        f"Keto: {keto_status}\n"
-                        f"Atkins: {atkins_status}\n"
-                        f"{warning_block}\n"
-                        f"📊 **NUTRITION**\n"
-                        f"• Net Carbs: `{net_carbs:.1f}g`\n"
-                        f"• Fiber: `{fiber:.1f}g` | Sugar: `{sugar:.1f}g`\n"
-                        f"• Fat: `{fat:.0f}g` | Protein: `{protein:.0f}g`\n"
-                        f"• Calories: `{calories}`\n"
-                        f"_(Per: {serving.get('serving_description', 'serving')})_")
-
-            return f"⚠️ I found 5 entries for '{query}', but they were empty."
+            return f"⚠️ I found entries for '{query}', but they had no nutritional data."
 
         except Exception as e:
-            print(f"DEBUG ERROR: {e}")
+            print(f"Error: {e}")
             time.sleep(2) 
             continue 
             
     return "⚠️ Connection unstable. Please try again."
+
+# --- MAIN FUNCTION 2: BARCODE ANALYZER ---
+def analyze_barcode_image(image_bytes):
+    try:
+        # 1. Read Image
+        img = Image.open(io.BytesIO(image_bytes))
+        
+        # 2. Decode Barcode (Using zxing-cpp)
+        results = zxingcpp.read_barcodes(img)
+        
+        if not results:
+            return "📸 I couldn't see a barcode clearly. Please try to get close, flat, and well-lit!"
+        
+        # Take the first barcode found
+        barcode_data = results[0].text
+        print(f"🔍 Scanned Barcode: {barcode_data}")
+
+        # 3. Call API
+        token = get_access_token()
+        if not token:
+            return "⚠️ API Auth failed."
+
+        headers = {'Authorization': f'Bearer {token}'}
+        api_url = "https://platform.fatsecret.com/rest/server.api"
+
+        params = {
+            'method': 'food.find_id_for_barcode',
+            'barcode': barcode_data,
+            'format': 'json'
+        }
+        res = requests.get(api_url, params=params, headers=headers)
+        data = res.json()
+
+        # 4. Check if Found
+        food_id = data.get('food_id', {}).get('value')
+        
+        if not food_id or food_id == "0":
+             return f"📦 I scanned barcode `{barcode_data}`, but it's not in my database yet."
+
+        # 5. Get Verdict
+        verdict = format_food_verdict(food_id, "SCANNED PRODUCT", token)
+        if verdict:
+            return verdict
+        else:
+            return "❌ Found the barcode, but nutrition data was missing."
+
+    except Exception as e:
+        return f"⚠️ Error processing image: {str(e)}"
