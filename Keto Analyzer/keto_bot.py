@@ -14,7 +14,7 @@ print("🥗 Keto_Atkins_Bot is online. Waiting for food...")
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
-    bot.reply_to(message, "Send me a food name (like 'Egg') and I'll give you the Net Carbs!")
+    bot.reply_to(message, "Send me a food name (like 'Egg') or a restaurant name (like 'McDonalds')!")
 
 @bot.message_handler(func=lambda message: True)
 def handle_food_query(message):
