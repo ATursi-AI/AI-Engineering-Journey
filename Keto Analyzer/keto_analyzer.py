@@ -5,6 +5,15 @@ import time
 CLIENT_ID = "b826e72b8a094b7abbbbe03569a28dcd"
 CLIENT_SECRET = "0693d8c758424dae80d7c47c824083c2"
 
+# --- CONFIGURATION ---
+# The "Blacklist" of ingredients that spike insulin or break ketosis
+HIDDEN_SUGARS = [
+    "maltitol", "dextrose", "maltodextrin", "sugar", "cane sugar", 
+    "corn syrup", "high fructose corn syrup", "agave", "honey", 
+    "sucrose", "fructose", "fruit juice concentrate", "rice syrup",
+    "barley malt", "dextrin"
+]
+
 def get_access_token():
     url = "https://oauth.fatsecret.com/connect/token"
     try:
@@ -21,7 +30,7 @@ def get_access_token():
         return None
 
 def analyze_food_text(query):
-    # RETRY LOOP: IP Stability (Preserving T-Mobile Fix)
+    # RETRY LOOP: IP Stability
     for attempt in range(5):
         token = get_access_token()
         if not token:
@@ -85,11 +94,14 @@ def analyze_food_text(query):
                 sugar = float(serving.get('sugar', 0)) 
                 calories = serving.get('calories', '0')
                 
+                # Extract Ingredients (if available)
+                ingredients_text = details.get('ingredients', 'N/A').lower()
+
                 net_carbs = max(0, carbs - fiber)
                 
                 # --- LOGIC ENGINE ---
                 
-                # KETO VERDICT
+                # 1. KETO VERDICT
                 keto_status = ""
                 if net_carbs <= 4:
                     keto_status = "🟢 Strict Keto"
@@ -98,7 +110,7 @@ def analyze_food_text(query):
                 else:
                     keto_status = "🔴 Avoid for Keto"
 
-                # ATKINS VERDICT (Phase logic)
+                # 2. ATKINS VERDICT
                 atkins_status = ""
                 if net_carbs <= 5:
                     atkins_status = "✅ Phase 1 (Induction) Friendly"
@@ -107,12 +119,25 @@ def analyze_food_text(query):
                 else:
                     atkins_status = "🚫 Maintenance Phase Only"
 
+                # 3. HIDDEN SUGAR DETECTOR
+                warnings = []
+                if ingredients_text != 'n/a':
+                    for bad_sugar in HIDDEN_SUGARS:
+                        if bad_sugar in ingredients_text:
+                            warnings.append(bad_sugar.title())
+                
+                warning_block = ""
+                if warnings:
+                    warning_str = ", ".join(warnings)
+                    warning_block = f"\n⚠️ **HIDDEN SUGAR WARNING**\nDetected: _{warning_str}_\n"
+
                 # --- OUTPUT GENERATION ---
                 return (f"🍽 **{food_name.upper()}**\n"
                         f"━━━━━━━━━━━━━━━━━━\n"
                         f"🥑 **VERDICT**\n"
                         f"Keto: {keto_status}\n"
-                        f"Atkins: {atkins_status}\n\n"
+                        f"Atkins: {atkins_status}\n"
+                        f"{warning_block}\n"
                         f"📊 **NUTRITION**\n"
                         f"• Net Carbs: `{net_carbs:.1f}g`\n"
                         f"• Fiber: `{fiber:.1f}g` | Sugar: `{sugar:.1f}g`\n"
