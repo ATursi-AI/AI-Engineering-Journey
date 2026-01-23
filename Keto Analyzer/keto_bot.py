@@ -16,30 +16,51 @@ print("🥗 Keto_Atkins_Bot is online. Waiting for food or barcodes...")
 def send_welcome(message):
     bot.reply_to(message, "Send me a food name (like 'Egg'), a restaurant ('McDonalds'), or a PHOTO of a barcode!")
 
+def send_smart_reply(message, response_package):
+    """
+    Helper function to send image + text if image exists, or just text.
+    """
+    text = response_package.get("text")
+    image_url = response_package.get("image")
+    
+    if image_url:
+        try:
+            bot.send_photo(message.chat.id, image_url, caption=text, parse_mode='Markdown')
+        except Exception as e:
+            # If image fails (bad url), fallback to text
+            print(f"Image failed: {e}")
+            bot.reply_to(message, text, parse_mode='Markdown')
+    else:
+        bot.reply_to(message, text, parse_mode='Markdown')
+
 # 1. HANDLE TEXT
 @bot.message_handler(content_types=['text'])
 def handle_food_query(message):
     query = message.text
     print(f"🔍 Searching: {query}")
-    response = analyze_food_text(query)
-    bot.reply_to(message, response, parse_mode='Markdown')
+    
+    # Get the Package (Dict)
+    response_package = analyze_food_text(query)
+    
+    # Send it smartly
+    send_smart_reply(message, response_package)
 
 # 2. HANDLE PHOTOS (Barcodes)
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
     print("📸 Photo received...")
     try:
-        # Get the file ID of the largest photo (Telegram sends multiple sizes)
+        # Get the file ID of the largest photo
         file_info = bot.get_file(message.photo[-1].file_id)
-        
-        # Download the image bytes
         downloaded_file = bot.download_file(file_info.file_path)
         
-        # Send to Analyzer
         bot.reply_to(message, "👀 Scanning barcode...")
-        response = analyze_barcode_image(downloaded_file)
         
-        bot.reply_to(message, response, parse_mode='Markdown')
+        # Get the Package (Dict)
+        response_package = analyze_barcode_image(downloaded_file)
+        
+        # Send it smartly
+        send_smart_reply(message, response_package)
         
     except Exception as e:
         bot.reply_to(message, f"⚠️ Error handling photo: {e}")

@@ -48,6 +48,15 @@ def format_food_verdict(food_id, food_name, token):
     details = details_data.get('food', {})
     servings_obj = details.get('servings', {}).get('serving', [])
     
+    # --- NEW: IMAGE EXTRACTION ---
+    # FatSecret hides images in a specific 'food_images' wrapper
+    image_url = None
+    images = details.get('food_images', {}).get('food_image', [])
+    if isinstance(images, list) and len(images) > 0:
+        image_url = images[0].get('image_url') # Get first image
+    elif isinstance(images, dict):
+        image_url = images.get('image_url')
+
     if not servings_obj:
         return None
     
@@ -94,7 +103,8 @@ def format_food_verdict(food_id, food_name, token):
         warning_str = ", ".join(warnings)
         warning_block = f"\n⚠️ **HIDDEN SUGAR WARNING**\nDetected: _{warning_str}_\n"
 
-    return (f"🍽 **{food_name.upper()}**\n"
+    # --- FORMATTED TEXT ---
+    text_response = (f"🍽 **{food_name.upper()}**\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"🥑 **VERDICT**\n"
             f"Keto: {keto_status}\n"
@@ -107,12 +117,18 @@ def format_food_verdict(food_id, food_name, token):
             f"• Calories: `{calories}`\n"
             f"_(Per: {serving.get('serving_description', 'serving')})_")
 
+    # Return a Dictionary (Package)
+    return {
+        "text": text_response,
+        "image": image_url
+    }
+
 # --- MAIN FUNCTION 1: TEXT ANALYZER ---
 def analyze_food_text(query):
-    # 0. Check Hacks
+    # 0. Check Hacks (Hacks don't have images yet, return text only)
     clean_query = query.lower().strip()
     if clean_query in FAST_FOOD_HACKS:
-        return FAST_FOOD_HACKS[clean_query]
+        return {"text": FAST_FOOD_HACKS[clean_query], "image": None}
 
     # API Loop
     for attempt in range(5):
@@ -146,22 +162,22 @@ def analyze_food_text(query):
                 food_list = [food_list]
             
             if not food_list:
-                return f"❓ I couldn't find any match for '{query}'."
+                return {"text": f"❓ I couldn't find any match for '{query}'.", "image": None}
 
             # 2. Loop through results until one works
             for food_item in food_list:
-                verdict = format_food_verdict(food_item['food_id'], food_item['food_name'], token)
-                if verdict:
-                    return verdict
+                result_package = format_food_verdict(food_item['food_id'], food_item['food_name'], token)
+                if result_package:
+                    return result_package
 
-            return f"⚠️ I found entries for '{query}', but they had no nutritional data."
+            return {"text": f"⚠️ I found entries for '{query}', but they had no nutritional data.", "image": None}
 
         except Exception as e:
             print(f"Error: {e}")
             time.sleep(2) 
             continue 
             
-    return "⚠️ Connection unstable. Please try again."
+    return {"text": "⚠️ Connection unstable. Please try again.", "image": None}
 
 # --- MAIN FUNCTION 2: BARCODE ANALYZER ---
 def analyze_barcode_image(image_bytes):
@@ -173,16 +189,15 @@ def analyze_barcode_image(image_bytes):
         results = zxingcpp.read_barcodes(img)
         
         if not results:
-            return "📸 I couldn't see a barcode clearly. Please try to get close, flat, and well-lit!"
+            return {"text": "📸 I couldn't see a barcode clearly. Please try to get close, flat, and well-lit!", "image": None}
         
-        # Take the first barcode found
         barcode_data = results[0].text
         print(f"🔍 Scanned Barcode: {barcode_data}")
 
         # 3. Call API
         token = get_access_token()
         if not token:
-            return "⚠️ API Auth failed."
+            return {"text": "⚠️ API Auth failed.", "image": None}
 
         headers = {'Authorization': f'Bearer {token}'}
         api_url = "https://platform.fatsecret.com/rest/server.api"
@@ -199,14 +214,14 @@ def analyze_barcode_image(image_bytes):
         food_id = data.get('food_id', {}).get('value')
         
         if not food_id or food_id == "0":
-             return f"📦 I scanned barcode `{barcode_data}`, but it's not in my database yet."
+             return {"text": f"📦 I scanned barcode `{barcode_data}`, but it's not in my database yet.", "image": None}
 
         # 5. Get Verdict
-        verdict = format_food_verdict(food_id, "SCANNED PRODUCT", token)
-        if verdict:
-            return verdict
+        result_package = format_food_verdict(food_id, "SCANNED PRODUCT", token)
+        if result_package:
+            return result_package
         else:
-            return "❌ Found the barcode, but nutrition data was missing."
+            return {"text": "❌ Found the barcode, but nutrition data was missing.", "image": None}
 
     except Exception as e:
-        return f"⚠️ Error processing image: {str(e)}"
+        return {"text": f"⚠️ Error processing image: {str(e)}", "image": None}
