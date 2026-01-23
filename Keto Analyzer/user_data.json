@@ -1,0 +1,55 @@
+import json
+import os
+from datetime import datetime
+
+# Simple file-based database
+DB_FILE = "user_history.json"
+
+def load_db():
+    if not os.path.exists(DB_FILE):
+        return {}
+    try:
+        with open(DB_FILE, 'r') as f:
+            return json.load(f)
+    except:
+        return {}
+
+def save_db(data):
+    with open(DB_FILE, 'w') as f:
+        json.dump(data, f, indent=4)
+
+def log_food(user_id, food_name, stats):
+    """
+    Saves a food item to the user's daily log.
+    stats = {'carbs': 5, 'fat': 10, 'protein': 5, 'calories': 100}
+    """
+    db = load_db()
+    user_id = str(user_id)
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    if user_id not in db:
+        db[user_id] = {}
+    
+    if today not in db[user_id]:
+        db[user_id][today] = {"foods": [], "totals": {"carbs": 0, "fat": 0, "protein": 0, "calories": 0}}
+
+    # Add food
+    db[user_id][today]["foods"].append({"name": food_name, "stats": stats})
+    
+    # Update Totals
+    t = db[user_id][today]["totals"]
+    t["carbs"] += stats.get('net_carbs', 0)
+    t["fat"] += stats.get('fat', 0)
+    t["protein"] += stats.get('protein', 0)
+    t["calories"] += float(stats.get('calories', 0))
+
+    save_db(db)
+
+def get_daily_stats(user_id):
+    db = load_db()
+    user_id = str(user_id)
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    if user_id in db and today in db[user_id]:
+        return db[user_id][today]["totals"]
+    return None

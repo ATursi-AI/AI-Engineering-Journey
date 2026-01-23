@@ -32,7 +32,30 @@ def get_access_token():
         print(f"Auth Error: {e}")
         return None
 
-# --- CORE LOGIC: THE JUDGE ---
+def calculate_keto_prime_score(net_carbs, fat, protein, ingredients_text):
+    """
+    THE FUTURE ALGORITHM:
+    Calculates a 0-10 score based on macro ratios + ingredient quality.
+    """
+    # 1. The Macro Score (Based on Net Carbs)
+    # Start at 10. Lose points for carbs.
+    score = 10 - (net_carbs * 0.5) 
+    
+    # 2. The Ratio Bonus (Fat should be high)
+    # If Fat > (Protein + Carbs), give a bonus
+    if fat > (protein + net_carbs):
+        score += 1.5
+
+    # 3. The Ingredient Penalty
+    if ingredients_text != 'n/a':
+        for sugar in HIDDEN_SUGARS:
+            if sugar in ingredients_text:
+                score -= 2 # Big penalty for hidden sugars
+    
+    # Clamp score between 0 and 10
+    score = max(0, min(10, score))
+    return round(score, 1)
+
 def format_food_verdict(food_id, food_name, token):
     headers = {'Authorization': f'Bearer {token}'}
     api_url = "https://platform.fatsecret.com/rest/server.api"
@@ -48,22 +71,20 @@ def format_food_verdict(food_id, food_name, token):
     details = details_data.get('food', {})
     servings_obj = details.get('servings', {}).get('serving', [])
     
-    # --- NEW: IMAGE EXTRACTION ---
-    # FatSecret hides images in a specific 'food_images' wrapper
+    # Get Image
     image_url = None
     images = details.get('food_images', {}).get('food_image', [])
     if isinstance(images, list) and len(images) > 0:
-        image_url = images[0].get('image_url') # Get first image
+        image_url = images[0].get('image_url')
     elif isinstance(images, dict):
         image_url = images.get('image_url')
 
     if not servings_obj:
         return None
     
-    # Get Primary Serving
     serving = servings_obj[0] if isinstance(servings_obj, list) else servings_obj
     
-    # Data Extraction
+    # Extract Data
     carbs = float(serving.get('carbohydrate', 0))
     fiber = float(serving.get('fiber', 0))
     fat = float(serving.get('fat', 0))
@@ -71,25 +92,16 @@ def format_food_verdict(food_id, food_name, token):
     sugar = float(serving.get('sugar', 0)) 
     calories = serving.get('calories', '0')
     ingredients_text = details.get('ingredients', 'N/A').lower()
-
     net_carbs = max(0, carbs - fiber)
     
-    # Verdict Logic
-    keto_status = ""
-    if net_carbs <= 4:
-        keto_status = "🟢 Strict Keto"
-    elif net_carbs <= 9:
-        keto_status = "🟡 Dirty Keto (Moderate)"
-    else:
-        keto_status = "🔴 Avoid for Keto"
-
-    atkins_status = ""
-    if net_carbs <= 5:
-        atkins_status = "✅ Phase 1 (Induction) Friendly"
-    elif net_carbs <= 12:
-        atkins_status = "⚠️ Phase 2 (Balancing) Only"
-    else:
-        atkins_status = "🚫 Maintenance Phase Only"
+    # --- FUTURE CALCULATION ---
+    keto_prime_score = calculate_keto_prime_score(net_carbs, fat, protein, ingredients_text)
+    
+    # Score Visualizer (Health Bar)
+    # 0-3: 🔴 | 4-6: 🟡 | 7-10: 🟢
+    score_emoji = "🔴"
+    if keto_prime_score > 4: score_emoji = "🟡"
+    if keto_prime_score > 7: score_emoji = "🟢"
 
     # Hidden Sugars
     warnings = []
@@ -103,32 +115,36 @@ def format_food_verdict(food_id, food_name, token):
         warning_str = ", ".join(warnings)
         warning_block = f"\n⚠️ **HIDDEN SUGAR WARNING**\nDetected: _{warning_str}_\n"
 
-    # --- FORMATTED TEXT ---
     text_response = (f"🍽 **{food_name.upper()}**\n"
             f"━━━━━━━━━━━━━━━━━━\n"
-            f"🥑 **VERDICT**\n"
-            f"Keto: {keto_status}\n"
-            f"Atkins: {atkins_status}\n"
+            f"{score_emoji} **KETO PRIME SCORE: {keto_prime_score}/10**\n"
             f"{warning_block}\n"
             f"📊 **NUTRITION**\n"
             f"• Net Carbs: `{net_carbs:.1f}g`\n"
-            f"• Fiber: `{fiber:.1f}g` | Sugar: `{sugar:.1f}g`\n"
             f"• Fat: `{fat:.0f}g` | Protein: `{protein:.0f}g`\n"
             f"• Calories: `{calories}`\n"
             f"_(Per: {serving.get('serving_description', 'serving')})_")
 
-    # Return a Dictionary (Package)
-    return {
-        "text": text_response,
-        "image": image_url
+    # Return the clean stats for the database to use
+    raw_stats = {
+        'net_carbs': net_carbs,
+        'fat': fat,
+        'protein': protein,
+        'calories': calories
     }
 
-# --- MAIN FUNCTION 1: TEXT ANALYZER ---
+    return {
+        "text": text_response,
+        "image": image_url,
+        "stats": raw_stats,
+        "name": food_name
+    }
+
 def analyze_food_text(query):
-    # 0. Check Hacks (Hacks don't have images yet, return text only)
+    # Check Hacks
     clean_query = query.lower().strip()
     if clean_query in FAST_FOOD_HACKS:
-        return {"text": FAST_FOOD_HACKS[clean_query], "image": None}
+        return {"text": FAST_FOOD_HACKS[clean_query], "image": None, "stats": None}
 
     # API Loop
     for attempt in range(5):
@@ -141,13 +157,7 @@ def analyze_food_text(query):
         api_url = "https://platform.fatsecret.com/rest/server.api"
         
         try:
-            # 1. Search
-            search_params = {
-                'method': 'foods.search',
-                'search_expression': query,
-                'format': 'json',
-                'max_results': 5 
-            }
+            search_params = {'method': 'foods.search', 'search_expression': query, 'format': 'json', 'max_results': 5}
             res = requests.get(api_url, params=search_params, headers=headers)
             data = res.json()
             
@@ -157,71 +167,44 @@ def analyze_food_text(query):
 
             foods_root = data.get('foods', {})
             food_list = foods_root.get('food', [])
+            if isinstance(food_list, dict): food_list = [food_list]
+            if not food_list: return {"text": f"❓ No match for '{query}'.", "image": None}
 
-            if isinstance(food_list, dict):
-                food_list = [food_list]
-            
-            if not food_list:
-                return {"text": f"❓ I couldn't find any match for '{query}'.", "image": None}
-
-            # 2. Loop through results until one works
             for food_item in food_list:
                 result_package = format_food_verdict(food_item['food_id'], food_item['food_name'], token)
-                if result_package:
-                    return result_package
+                if result_package: return result_package
 
-            return {"text": f"⚠️ I found entries for '{query}', but they had no nutritional data.", "image": None}
+            return {"text": f"⚠️ No nutrition data for '{query}'.", "image": None}
 
         except Exception as e:
-            print(f"Error: {e}")
             time.sleep(2) 
             continue 
             
-    return {"text": "⚠️ Connection unstable. Please try again.", "image": None}
+    return {"text": "⚠️ Connection unstable.", "image": None}
 
-# --- MAIN FUNCTION 2: BARCODE ANALYZER ---
 def analyze_barcode_image(image_bytes):
     try:
-        # 1. Read Image
         img = Image.open(io.BytesIO(image_bytes))
-        
-        # 2. Decode Barcode (Using zxing-cpp)
         results = zxingcpp.read_barcodes(img)
-        
-        if not results:
-            return {"text": "📸 I couldn't see a barcode clearly. Please try to get close, flat, and well-lit!", "image": None}
+        if not results: return {"text": "📸 No barcode found. Try again closer!", "image": None}
         
         barcode_data = results[0].text
-        print(f"🔍 Scanned Barcode: {barcode_data}")
-
-        # 3. Call API
         token = get_access_token()
-        if not token:
-            return {"text": "⚠️ API Auth failed.", "image": None}
+        if not token: return {"text": "⚠️ API Auth failed.", "image": None}
 
         headers = {'Authorization': f'Bearer {token}'}
         api_url = "https://platform.fatsecret.com/rest/server.api"
-
-        params = {
-            'method': 'food.find_id_for_barcode',
-            'barcode': barcode_data,
-            'format': 'json'
-        }
+        params = {'method': 'food.find_id_for_barcode', 'barcode': barcode_data, 'format': 'json'}
         res = requests.get(api_url, params=params, headers=headers)
         data = res.json()
 
-        # 4. Check if Found
         food_id = data.get('food_id', {}).get('value')
-        
         if not food_id or food_id == "0":
-             return {"text": f"📦 I scanned barcode `{barcode_data}`, but it's not in my database yet.", "image": None}
+             return {"text": f"📦 Barcode `{barcode_data}` not found in database.", "image": None}
 
-        # 5. Get Verdict
         result_package = format_food_verdict(food_id, "SCANNED PRODUCT", token)
-        if result_package:
-            return result_package
-        else:
-            return {"text": "❌ Found the barcode, but nutrition data was missing.", "image": None}
+        if result_package: return result_package
+        else: return {"text": "❌ Found barcode, but missing data.", "image": None}
 
     except Exception as e:
-        return {"text": f"⚠️ Error processing image: {str(e)}", "image": None}
+        return {"text": f"⚠️ Error: {str(e)}", "image": None}
